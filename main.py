@@ -1,295 +1,172 @@
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import psutil
+import cv2
+import mediapipe as mp
+import pyautogui
 import time
-import csv
-from math import pi
-from scipy.interpolate import make_interp_spline
 import numpy as np
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-
-
-class CerebrumPulsePro:
-    def __init__(self, root):
-        self.root = root
-        self.root.withdraw()
-        self.max_points = 40
-        self.start_time = time.time()
-
-        self.cpu_history = []
-        self.ram_history = []
-        self.net_history = []
-        self.time_history = []
-        self.temp_history = []
-        self.disk_history = []
-
-        self.paused = False
-
-        self.setup_style()
-        self.create_splash()
-
-    def setup_style(self):
-        style = ttk.Style(self.root)
-        style.theme_use('clam')
-
-        # Palette JetBrains-like dark theme
-        bg_main = '#242424'
-        bg_frame = '#2d2d2d'
-        fg_primary = '#bbbbbb'
-        fg_highlight = '#a6e22e'  # verde lime
-        btn_bg = '#3c3f41'
-        btn_hover = '#4caf50'
-        btn_fg = '#eeeeee'
-
-        # Main window bg
-        self.root.configure(bg=bg_main)
-
-        style.configure('.', background=bg_main, foreground=fg_primary, font=('JetBrains Mono', 11))
-        style.configure('TFrame', background=bg_frame)
-        style.configure('TLabel', background=bg_main, foreground=fg_primary, font=('JetBrains Mono', 12))
-
-        style.configure('Header.TLabel', font=('JetBrains Mono', 22, 'bold'), foreground=fg_highlight, background=bg_main)
-
-        style.configure('TButton',
-                        background=btn_bg,
-                        foreground=btn_fg,
-                        font=('JetBrains Mono', 12, 'bold'),
-                        padding=10,
-                        relief='flat')
-        style.map('TButton',
-                  background=[('active', btn_hover), ('!disabled', btn_bg)],
-                  foreground=[('active', '#ffffff'), ('!disabled', btn_fg)])
-
-        style.configure('TProgressbar', troughcolor=bg_frame, background=btn_hover, thickness=14)
-
-    def create_splash(self):
-        self.splash = tk.Toplevel()
-        self.splash.title("Cerebrum Pulse - Avvio")
-        self.splash.geometry("450x320")
-        self.splash.configure(bg='#1e1e1e')
-        self.splash.resizable(False, False)
-        ttk.Label(self.splash, text="CEREBRUM PULSE PRO",
-                  font=("JetBrains Mono", 30, "bold"),
-                  background='#1e1e1e',
-                  foreground='#a6e22e').pack(pady=(50, 20))
-        self.progress = ttk.Progressbar(self.splash, orient=tk.HORIZONTAL, length=350, mode='determinate')
-        self.progress.pack(pady=20)
-        self.status = ttk.Label(self.splash, text="Avvio del sistema...", font=("JetBrains Mono", 14), background='#1e1e1e', foreground='#bbbbbb')
-        self.status.pack()
-        self.progress_val = 0
-        self.splash.after(50, self.progress_step)
-
-    def progress_step(self):
-        self.progress_val += 3
-        self.progress['value'] = self.progress_val
-        dots = (self.progress_val // 10) % 4
-        self.status.config(text=f"Avvio del sistema{'.' * dots}")
-        if self.progress_val < 100:
-            self.splash.after(50, self.progress_step)
-        else:
-            self.splash.destroy()
-            self.launch_main()
-
-    def launch_main(self):
-        self.root.deiconify()
-        self.root.title("Cerebrum Pulse Pro - Monitor Sistema")
-        self.root.geometry("900x820")
-        self.root.configure(bg='#242424')
-
-        header = ttk.Label(self.root, text="Cerebrum Pulse Pro - Monitoraggio in tempo reale", style='Header.TLabel')
-        header.pack(pady=15)
-
-        info_frame = ttk.Frame(self.root)
-        info_frame.pack(pady=10, fill='x', padx=10)
-
-        label_args = dict(font=('JetBrains Mono', 15, 'bold'), padding=8)
-
-        self.cpu_label = ttk.Label(info_frame, text="CPU: -- %", **label_args)
-        self.cpu_label.grid(row=0, column=0, padx=20, pady=6)
-
-        self.ram_label = ttk.Label(info_frame, text="RAM: -- %", **label_args)
-        self.ram_label.grid(row=0, column=1, padx=20, pady=6)
-
-        self.net_label = ttk.Label(info_frame, text="Rete: -- MB", **label_args)
-        self.net_label.grid(row=0, column=2, padx=20, pady=6)
-
-        self.temp_label = ttk.Label(info_frame, text="Temperatura CPU: -- °C", **label_args)
-        self.temp_label.grid(row=1, column=0, padx=20, pady=6)
-
-        self.disk_label = ttk.Label(info_frame, text="Disco: -- % usato", **label_args)
-        self.disk_label.grid(row=1, column=1, padx=20, pady=6)
-
-        btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(pady=15)
-
-        self.pause_btn = ttk.Button(btn_frame, text="Pausa", command=self.toggle_pause)
-        self.pause_btn.grid(row=0, column=0, padx=15)
-
-        self.export_btn = ttk.Button(btn_frame, text="Esporta CSV", command=self.export_csv)
-        self.export_btn.grid(row=0, column=1, padx=15)
-
-        self.exit_btn = ttk.Button(btn_frame, text="Esci", command=self.root.quit)
-        self.exit_btn.grid(row=0, column=2, padx=15)
-
-        # Grafici: Figure con 2 subplot e styling moderno
-        self.fig = Figure(figsize=(8.5, 7), dpi=110, facecolor='#242424')
-
-        self.ax_line = self.fig.add_subplot(211, facecolor='#2d2d2d')
-        self.ax_radar = self.fig.add_subplot(223, polar=True, facecolor='#2d2d2d')
-        self.ax_doughnut = self.fig.add_subplot(224, facecolor='#242424')
-
-        self.fig.tight_layout(pad=4)
-
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self.root)
-        self.canvas.get_tk_widget().pack(fill='both', expand=True)
-
-        self.update_stats()
-
-    # (Restante codice identico, no cambiamenti)
-
-    def toggle_pause(self):
-        self.paused = not self.paused
-        self.pause_btn.config(text="Riprendi" if self.paused else "Pausa")
-
-    def export_csv(self):
-        if not self.time_history:
-            messagebox.showwarning("Nessun dato", "Nessun dato da esportare.")
-            return
-        filepath = filedialog.asksaveasfilename(defaultextension=".csv",
-                                                filetypes=[("CSV files", "*.csv")],
-                                                title="Salva dati monitoraggio")
-        if not filepath:
-            return
-        try:
-            with open(filepath, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(["Tempo (s)", "CPU %", "RAM %", "Rete MB", "Temp CPU (°C)", "Uso Disco %"])
-                for i in range(len(self.time_history)):
-                    writer.writerow([
-                        f"{self.time_history[i]:.1f}",
-                        f"{self.cpu_history[i]:.1f}",
-                        f"{self.ram_history[i]:.1f}",
-                        f"{self.net_history[i]:.2f}",
-                        f"{self.temp_history[i] if i < len(self.temp_history) else '--'}",
-                        f"{self.disk_history[i] if i < len(self.disk_history) else '--'}"
-                    ])
-            messagebox.showinfo("Esportazione completata", f"Dati esportati in {filepath}")
-        except Exception as e:
-            messagebox.showerror("Errore", f"Errore durante l'esportazione: {e}")
-
-    def smooth_line(self, x, y, points=200):
-        if len(x) < 4:
-            return x, y
-        x = np.array(x)
-        y = np.array(y)
-        x_new = np.linspace(x.min(), x.max(), points)
-        spl = make_interp_spline(x, y, k=3)
-        y_smooth = spl(x_new)
-        return x_new, y_smooth
-
-    def radar_chart(self, values, labels):
-        N = len(values)
-        angles = [n / float(N) * 2 * pi for n in range(N)]
-        angles += angles[:1]
-        values += values[:1]
-
-        self.ax_radar.clear()
-        self.ax_radar.set_theta_offset(pi / 2)
-        self.ax_radar.set_theta_direction(-1)
-        self.ax_radar.set_rlabel_position(0)
-        self.ax_radar.set_ylim(0, 100)
-        self.ax_radar.grid(color='#555555', linestyle='dotted')
-        self.ax_radar.set_facecolor('#2d2d2d')
-
-        self.ax_radar.plot(angles, values, color='#a6e22e', linewidth=2, linestyle='solid')
-        self.ax_radar.fill(angles, values, color='#a6e22e', alpha=0.25)
-
-        self.ax_radar.set_xticks(angles[:-1])
-        self.ax_radar.set_xticklabels(labels, color='white', fontsize=11)
-
-    def doughnut_chart(self, used_percent):
-        self.ax_doughnut.clear()
-        sizes = [used_percent, 100 - used_percent]
-        colors = ['#f44336', '#444444']
-        wedges, _ = self.ax_doughnut.pie(sizes, colors=colors, startangle=90, wedgeprops=dict(width=0.35))
-        self.ax_doughnut.text(0, 0, f"{used_percent:.1f}%", ha='center', va='center', fontsize=22, color='#a6e22e', fontweight='bold')
-
-    def update_stats(self):
-        if not self.paused:
-            now = time.time() - self.start_time
-            self.time_history.append(now)
-
-            cpu = psutil.cpu_percent()
-            ram = psutil.virtual_memory().percent
-            net = psutil.net_io_counters().bytes_sent / 1024 / 1024  # MB inviati
-            try:
-                temps = psutil.sensors_temperatures()
-                if 'coretemp' in temps:
-                    temp = temps['coretemp'][0].current
-                elif 'cpu-thermal' in temps:
-                    temp = temps['cpu-thermal'][0].current
-                else:
-                    temp = None
-            except Exception:
-                temp = None
-
-            disk = psutil.disk_usage('/').percent
-
-            self.cpu_history.append(cpu)
-            self.ram_history.append(ram)
-            self.net_history.append(net)
-            if temp is not None:
-                self.temp_history.append(temp)
-            self.disk_history.append(disk)
-
-            if len(self.cpu_history) > self.max_points:
-                self.cpu_history.pop(0)
-                self.ram_history.pop(0)
-                self.net_history.pop(0)
-                if self.temp_history:
-                    self.temp_history.pop(0)
-                self.disk_history.pop(0)
-                self.time_history.pop(0)
-
-            self.cpu_label.config(text=f"CPU: {cpu:.1f} %")
-            self.ram_label.config(text=f"RAM: {ram:.1f} %")
-            self.net_label.config(text=f"Rete: {net:.2f} MB")
-            self.temp_label.config(text=f"Temperatura CPU: {temp:.1f} °C" if temp else "Temperatura CPU: -- °C")
-            self.disk_label.config(text=f"Disco: {disk:.1f} % usato")
-
-            # Grafico a linea smooth CPU e RAM
-            self.ax_line.clear()
-            self.ax_line.set_facecolor('#2d2d2d')
-            self.ax_line.grid(color='#555555', linestyle='dotted', alpha=0.7)
-            self.ax_line.set_xlim(self.time_history[0], self.time_history[-1])
-            self.ax_line.set_ylim(0, 100)
-            self.ax_line.set_ylabel('Percentuale %', color='white')
-            self.ax_line.set_xlabel('Tempo (s)', color='white')
-            self.ax_line.tick_params(axis='x', colors='white')
-            self.ax_line.tick_params(axis='y', colors='white')
-
-            x_smooth, y_cpu = self.smooth_line(self.time_history, self.cpu_history)
-            _, y_ram = self.smooth_line(self.time_history, self.ram_history)
-
-            self.ax_line.plot(x_smooth, y_cpu, color='#a6e22e', linewidth=2, label='CPU %')
-            self.ax_line.plot(x_smooth, y_ram, color='#66d9ef', linewidth=2, label='RAM %')
-            self.ax_line.legend(loc='upper right', facecolor='#2d2d2d', edgecolor='#a6e22e', labelcolor='white')
-
-            # Radar chart con statistiche correnti
-            radar_values = [cpu, ram, disk, 100 - disk, 100 - ram]
-            radar_labels = ['CPU', 'RAM', 'Disco Usato', 'Disco Libero', 'RAM Libera']
-            self.radar_chart(radar_values, radar_labels)
-
-            # Doughnut chart uso disco
-            self.doughnut_chart(disk)
-
-            self.canvas.draw()
-
-        self.root.after(900, self.update_stats)
-
-
-if __name__ == '__main__':
-    root = tk.Tk()
-    app = CerebrumPulsePro(root)
-    root.mainloop()
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+last_action_time = 0
+action_delay = 1
+logo = cv2.imread('logo.png', cv2.IMREAD_UNCHANGED)
+if logo is None:
+    print("Errore: logo.png non trovato.")
+    exit()
+logo_width = 100
+scale = logo_width / logo.shape[1]
+logo = cv2.resize(logo, (logo_width, int(logo.shape[0] * scale)), interpolation=cv2.INTER_AREA)
+def overlay_logo(frame, logo, pos=(10,10)):
+    if logo.shape[2] == 4:
+        b,g,r,a = cv2.split(logo)
+        overlay_color = cv2.merge((b,g,r))
+        mask = cv2.merge((a,a,a))
+        h, w = overlay_color.shape[:2]
+        roi = frame[pos[1]:pos[1]+h, pos[0]:pos[0]+w]
+        img1_bg = cv2.bitwise_and(roi, cv2.bitwise_not(mask))
+        img2_fg = cv2.bitwise_and(overlay_color, mask)
+        dst = cv2.add(img1_bg, img2_fg)
+        frame[pos[1]:pos[1]+h, pos[0]:pos[0]+w] = dst
+    else:
+        h, w = logo.shape[:2]
+        frame[pos[1]:pos[1]+h, pos[0]:pos[0]+w] = logo
+def overlay_logo_with_shadow(frame, logo, pos=(10,10)):
+    shadow_offset = 4
+    shadow = np.zeros_like(logo)
+    if logo.shape[2] == 4:
+        shadow[..., :3] = 0
+        shadow[..., 3] = logo[..., 3]
+    else:
+        shadow[:] = 0
+    overlay_logo(frame, shadow, (pos[0] + shadow_offset, pos[1] + shadow_offset))
+    overlay_logo(frame, logo, pos)
+def is_thumb_up(hand_landmarks):
+    thumb_tip = hand_landmarks.landmark[4]
+    thumb_ip = hand_landmarks.landmark[3]
+    index_tip = hand_landmarks.landmark[8]
+    index_pip = hand_landmarks.landmark[6]
+    middle_tip = hand_landmarks.landmark[12]
+    middle_pip = hand_landmarks.landmark[10]
+    thumb_up = thumb_tip.y < thumb_ip.y
+    index_closed = index_tip.y > index_pip.y
+    middle_closed = middle_tip.y > middle_pip.y
+    return thumb_up and index_closed and middle_closed
+def is_thumb_down(hand_landmarks):
+    thumb_tip = hand_landmarks.landmark[4]
+    thumb_ip = hand_landmarks.landmark[3]
+    index_tip = hand_landmarks.landmark[8]
+    index_pip = hand_landmarks.landmark[6]
+    middle_tip = hand_landmarks.landmark[12]
+    middle_pip = hand_landmarks.landmark[10]
+    thumb_down = thumb_tip.y > thumb_ip.y
+    index_closed = index_tip.y > index_pip.y
+    middle_closed = middle_tip.y > middle_pip.y
+    return thumb_down and index_closed and middle_closed
+def is_palm_open(hand_landmarks):
+    tips_ids = [8, 12, 16, 20]
+    extended = 0
+    for tip_id in tips_ids:
+        tip = hand_landmarks.landmark[tip_id]
+        pip = hand_landmarks.landmark[tip_id - 2]
+        if tip.y < pip.y:
+            extended += 1
+    return extended == 4
+def is_index_pointing(hand_landmarks):
+    index_tip = hand_landmarks.landmark[8]
+    index_pip = hand_landmarks.landmark[6]
+    other_tips = [12, 16, 20]
+    index_extended = index_tip.y < index_pip.y
+    others_closed = all(hand_landmarks.landmark[tip].y > hand_landmarks.landmark[tip - 2].y for tip in other_tips)
+    return index_extended and others_closed
+def is_v_sign(hand_landmarks):
+    index_tip = hand_landmarks.landmark[8]
+    index_pip = hand_landmarks.landmark[6]
+    middle_tip = hand_landmarks.landmark[12]
+    middle_pip = hand_landmarks.landmark[10]
+    ring_tip = hand_landmarks.landmark[16]
+    ring_pip = hand_landmarks.landmark[14]
+    pinky_tip = hand_landmarks.landmark[20]
+    pinky_pip = hand_landmarks.landmark[18]
+    index_extended = index_tip.y < index_pip.y
+    middle_extended = middle_tip.y < middle_pip.y
+    ring_closed = ring_tip.y > ring_pip.y
+    pinky_closed = pinky_tip.y > pinky_pip.y
+    return index_extended and middle_extended and ring_closed and pinky_closed
+def is_fist(hand_landmarks):
+    return all(hand_landmarks.landmark[tip].y > hand_landmarks.landmark[tip - 2].y for tip in [8, 12, 16, 20])
+def draw_status_box(frame, text, color=(0,255,0)):
+    h, w = frame.shape[:2]
+    box_h = 60
+    cv2.rectangle(frame, (8, h - box_h + 8), (w - 8, h - 8), (30, 30, 30), -1)
+    cv2.rectangle(frame, (0, h - box_h), (w, h), color, -1)
+    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
+    text_x = (w - text_size[0]) // 2
+    text_y = h - (box_h // 2) + (text_size[1] // 2)
+    cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+def draw_tooltip(frame, text):
+    cv2.rectangle(frame, (10, 10), (500, 50), (50, 50, 50), -1)
+    cv2.putText(frame, text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+cap = cv2.VideoCapture(0)
+with mp_hands.Hands(
+    max_num_hands=1,
+    min_detection_confidence=0.75,
+    min_tracking_confidence=0.75) as hands:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame = cv2.flip(frame, 1)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = hands.process(frame_rgb)
+        current_time = time.time()
+        action_text = ""
+        action_color = (200, 200, 200)
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                mp_drawing.draw_landmarks(
+                    frame, hand_landmarks, mp_hands.HAND_CONNECTIONS,
+                    mp_drawing.DrawingSpec(color=(0,255,255), thickness=2, circle_radius=3),
+                    mp_drawing.DrawingSpec(color=(0,128,255), thickness=2))
+                if is_thumb_up(hand_landmarks):
+                    action_text = "Volume + (Pollice in su)"
+                    action_color = (0, 255, 0)
+                    if current_time - last_action_time > action_delay:
+                        pyautogui.press('volumeup')
+                        last_action_time = current_time
+                elif is_thumb_down(hand_landmarks):
+                    action_text = "Volume - (Pollice in giu')"
+                    action_color = (0, 0, 255)
+                    if current_time - last_action_time > action_delay:
+                        pyautogui.press('volumedown')
+                        last_action_time = current_time
+                elif is_palm_open(hand_landmarks):
+                    action_text = "Play/Pausa (Palmo aperto)"
+                    action_color = (0, 255, 255)
+                    if current_time - last_action_time > action_delay:
+                        pyautogui.press('playpause')
+                        last_action_time = current_time
+                elif is_index_pointing(hand_landmarks):
+                    action_text = "Avanti (Indice puntato)"
+                    action_color = (0, 180, 255)
+                    if current_time - last_action_time > action_delay:
+                        pyautogui.press('right')
+                        last_action_time = current_time
+                elif is_v_sign(hand_landmarks):
+                    action_text = "Indietro (V segno)"
+                    action_color = (255, 0, 180)
+                    if current_time - last_action_time > action_delay:
+                        pyautogui.press('left')
+                        last_action_time = current_time
+                elif is_fist(hand_landmarks):
+                    action_text = "Mute/Unmute (Pugno)"
+                    action_color = (180, 0, 255)
+                    if current_time - last_action_time > action_delay:
+                        pyautogui.press('volumemute')
+                        last_action_time = current_time
+        draw_status_box(frame, action_text, action_color)
+        h, w = frame.shape[:2]
+        logo_h, logo_w = logo.shape[:2]
+        overlay_logo_with_shadow(frame, logo, pos=(w - logo_w - 10, 10))
+        cv2.imshow("Cerebrum Pulse - By VincenzoT", frame)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+cap.release()
+cv2.destroyAllWindows()
